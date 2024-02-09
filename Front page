@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Programmer Profile</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <img src="profile-picture.jpg" alt="Profile Picture" class="profile-picture">
+            <h1>John Doe</h1>
+            <p>Full Stack Developer</p>
+        </div>
+    </header>
+
+    <section class="about">
+        <div class="container">
+            <h2>About Me</h2>
+            <p>I'm a passionate programmer with expertise in web development. I love building responsive and user-friendly web applications using modern technologies.</p>
+        </div>
+    </section>
+
+    <section class="repositories">
+        <div class="container">
+            <h2>Featured Repositories</h2>
+            <div class="repo">
+                <h3>Project 1</h3>
+                <p>A brief description of Project 1.</p>
+            </div>
+            <div class="repo">
+                <h3>Project 2</h3>
+                <p>A brief description of Project 2.</p>
+            </div>
+            <div class="repo">
+                <h3>Project 3</h3>
+                <p>A brief description of Project 3.</p>
+            </div>
+        </div>
+    </section>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2024 John Doe</p>
+        </div>
+    </footer>
+</body>
+</html>
