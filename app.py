@@ -2,12 +2,14 @@ from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
 import torch
 import pydicom
+from pydicom.pixel_data_handlers import pylibjpeg_handler
 import numpy as np
 from PIL import Image
 import io
 import os
 import sys
 import traceback
+import warnings
 from werkzeug.utils import secure_filename
 import timm
 from ultralytics import YOLO
@@ -154,6 +156,12 @@ def validate_dicom(file_path):
 
 def preprocess_dicom(dicom_path):
     """Read and preprocess DICOM image"""
+    # Configure pydicom to use pylibjpeg for JPEG 2000 (better handling)
+    pydicom.config.pixel_data_handlers = [pylibjpeg_handler]
+    
+    # Suppress JPEG 2000 bit depth warnings (these are harmless but noisy)
+    warnings.filterwarnings('ignore', message='.*Bits Stored.*', category=UserWarning)
+    
     # Validate DICOM and check if it's a spine image
     is_valid, result, is_spine, body_part, modality = validate_dicom(dicom_path)
     
