@@ -8,7 +8,8 @@
 
 AI-powered web application for detecting spinal lesions from DICOM X-ray images using deep learning models.
 
-🌐 **[Live Demo](https://pronad1.github.io/Deploy-Model/)** | 📖 **[Documentation](DEPLOYMENT.md)** | 🚀 **[GitHub Setup](GITHUB_SETUP.md)**
+> ⚠️ **To deploy this app online**, see [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)  
+> 📖 **Documentation**: [DEPLOYMENT.md](DEPLOYMENT.md) | 🚀 **Setup**: [GITHUB_SETUP.md](GITHUB_SETUP.md)
 
 ## 📋 Overview
 
@@ -28,15 +29,11 @@ Based on the **VinDr-SpineXR** dataset - a large annotated medical image dataset
 
 ## 🚀 Quick Start
 
-### Prerequisites
-- Python 3.8+
-- CUDA-compatible GPU (optional, for faster inference)
-
-### Installation
+### Running Locally
 
 1. **Clone the repository**
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/pronad1/Deploy-Model.git
 cd Deploy-Model
 ```
 
@@ -45,7 +42,35 @@ cd Deploy-Model
 pip install -r requirements.txt
 ```
 
-3. **Verify model files exist**
+3. **Run the application**
+```bash
+python app.py
+```
+
+4. **Open in browser**
+```
+http://localhost:5000
+```
+
+### Deploying Online
+
+**GitHub only stores your code - it doesn't run the app!**
+
+To make your app accessible on the internet, deploy to a hosting platform:
+
+✅ **Render.com** (Free, Recommended) - [See Guide](DEPLOYMENT_GUIDE.md#option-1-rendercom-recommended---free--easy)  
+✅ **Railway.app** (Free $5/month credit) - [See Guide](DEPLOYMENT_GUIDE.md#option-2-railwayapp-easy-with-better-free-tier)  
+✅ **Hugging Face Spaces** (Free for ML) - [See Guide](DEPLOYMENT_GUIDE.md#option-3-hugging-face-spaces-best-for-ml-apps)
+
+📖 **Full deployment guide**: [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
+
+---
+
+### Prerequisites (for local development)
+- Python 3.8+
+- CUDA-compatible GPU (optional, for faster inference)
+
+### Model Files
 ```
 ensemble output/
 ├── densenet121_balanced/model_best.pth
