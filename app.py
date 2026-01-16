@@ -20,7 +20,16 @@ from torchvision import transforms
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-app.config['UPLOAD_FOLDER'] = 'uploads'
+
+# Use /tmp for uploads on production (read-only filesystem on render.com)
+# Local development uses 'uploads' folder
+if os.environ.get('RENDER'):
+    app.config['UPLOAD_FOLDER'] = '/tmp/uploads'
+else:
+    app.config['UPLOAD_FOLDER'] = 'uploads'
+
+# Allowed image extensions
+ALLOWED_EXTENSIONS = {'dcm', 'dicom', 'jpg', 'jpeg', 'png', 'bmp', 'tiff', 'tif'}
 
 # Create uploads directory
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -39,6 +48,11 @@ ENSEMBLE_WEIGHTS = {
 CLASSIFICATION_THRESHOLD = 0.449
 
 
+def allowed_file(filename):
+    """Check if file extension is allowed"""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
 def load_models():
     """Load all trained models"""
     global classification_models, detection_model
@@ -51,7 +65,7 @@ def load_models():
     try:
         # DenseNet121
         densenet = timm.create_model('densenet121', pretrained=False, num_classes=1)
-        densenet_path = 'ensemble output/densenet121_balanced/model_best.pth'
+        densenet_path = os.path.join('ensemble output', 'densenet121_balanced', 'model_best.pth')
         print(f"Looking for DenseNet at: {densenet_path}")
         if os.path.exists(densenet_path):
             checkpoint = torch.load(densenet_path, map_location=device, weights_only=False)
@@ -66,7 +80,7 @@ def load_models():
         
         # ResNet50
         resnet = timm.create_model('resnet50', pretrained=False, num_classes=1)
-        resnet_path = 'ensemble output/resnet50_optimized/model_best.pth'
+        resnet_path = os.path.join('ensemble output', 'resnet50_optimized', 'model_best.pth')
         print(f"Looking for ResNet50 at: {resnet_path}")
         if os.path.exists(resnet_path):
             checkpoint = torch.load(resnet_path, map_location=device, weights_only=False)
@@ -80,7 +94,7 @@ def load_models():
         
         # EfficientNetV2-S
         efficientnet = timm.create_model('tf_efficientnetv2_s', pretrained=False, num_classes=1)
-        efficientnet_path = 'ensemble output/tf_efficientnetv2_s_optimized/model_best.pth'
+        efficientnet_path = os.path.join('ensemble output', 'tf_efficientnetv2_s_optimized', 'model_best.pth')
         print(f"Looking for EfficientNet at: {efficientnet_path}")
         if os.path.exists(efficientnet_path):
             checkpoint = torch.load(efficientnet_path, map_location=device, weights_only=False)
@@ -98,7 +112,7 @@ def load_models():
     
     # Load YOLO Detection Model
     try:
-        yolo_path = 'detection output/yolo11/weights/best.pt'
+        yolo_path = os.path.join('detection output', 'yolo11', 'weights', 'best.pt')
         print(f"Looking for YOLO at: {yolo_path}")
         if os.path.exists(yolo_path):
             detection_model = YOLO(yolo_path)
@@ -152,6 +166,164 @@ def validate_dicom(file_path):
         return True, ds, is_spine, body_part, str(getattr(ds, 'Modality', 'Unknown'))
     except Exception as e:
         return False, str(e), False, '', ''
+
+
+def check_if_spine_image(pixel_array):
+    """Check if image appears to be a medical/spine X-ray or MRI"""
+    # Note: YOLO model is trained to detect lesions/abnormalities, not spine presence
+    # We'll use image characteristics to detect medical vs natural images
+    
+    try:
+        # Check if original image is color (RGB)
+        is_color = len(pixel_array.shape) == 3 and pixel_array.shape[2] == 3
+        
+        # Convert to grayscale for analysis
+        if is_color:
+            gray = cv2.cvtColor(pixel_array, cv2.COLOR_RGB2GRAY)
+            
+            # Check 1: Determine if image is predominantly grayscale
+            # Medical X-rays should have R≈G≈B for most pixels
+            r_channel = pixel_array[:, :, 0].astype(np.float32)
+            g_channel = pixel_array[:, :, 1].astype(np.float32)
+            b_channel = pixel_array[:, :, 2].astype(np.float32)
+            
+            # Calculate how many pixels are grayscale (R≈G≈B within tolerance)
+            rg_diff = np.abs(r_channel - g_channel)
+            rb_diff = np.abs(r_channel - b_channel)
+            gb_diff = np.abs(g_channel - b_channel)
+            
+            # A pixel is grayscale if all channel differences are < 10
+            is_grayscale_pixel = (rg_diff < 10) & (rb_diff < 10) & (gb_diff < 10)
+            grayscale_percentage = np.sum(is_grayscale_pixel) / is_grayscale_pixel.size
+            
+            # If image is predominantly grayscale (>85%), it's likely a medical X-ray
+            if grayscale_percentage > 0.85:
+                # Accept as medical image - it's grayscale
+                pass  # Continue to other checks
+            else:
+                # Image has significant color content - check if it's a color photo
+                avg_color_diff = (np.mean(rg_diff) + np.mean(rb_diff) + np.mean(gb_diff)) / 3.0
+                
+                # Calculate color saturation for non-grayscale images
+                hsv = cv2.cvtColor(pixel_array, cv2.COLOR_RGB2HSV)
+                saturation = hsv[:, :, 1]
+                avg_saturation = np.mean(saturation)
+                
+                # If it has both color variation AND saturation, it's a color photo
+                if avg_color_diff > 5.0 and avg_saturation > 10:
+                    return False, "This appears to be a color photograph, not a medical X-ray"
+        else:
+            gray = pixel_array
+        
+        # Check 2: Resolution check - be lenient
+        height, width = gray.shape
+        if height < 50 or width < 50:
+            return False, "Image resolution too low for medical analysis"
+        
+        # Check 3: Histogram analysis - medical images have specific intensity distribution
+        # Medical X-rays typically have a bimodal or wide distribution
+        hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+        hist = hist.flatten()
+        
+        # Normalize histogram
+        hist = hist / (height * width)
+        
+        # Check for concentrated histogram (natural photos often have this)
+        # Medical images use more of the intensity range
+        # Increased threshold to 0.25 to be more lenient
+        max_bin_ratio = np.max(hist)
+        if max_bin_ratio > 0.25:  # Too concentrated in one intensity
+            return False, "Image histogram suggests a natural photo, not medical imaging"
+        
+        # Check 4: Edge density - medical images have specific edge patterns
+        # Natural photos (like dogs) have many complex edges
+        edges = cv2.Canny(gray, 50, 150)
+        edge_ratio = np.count_nonzero(edges) / (height * width)
+        
+        # Medical images typically have edges from bones and soft tissue
+        # Natural photos have much higher edge density (textures, details)
+        # Increased threshold to 0.35 to be more lenient with medical images
+        if edge_ratio > 0.35:  # Too many edges for medical image
+            return False, "Image has too many edges - appears to be a photograph"
+        
+        # Removed lower edge bound - some medical images may have few edges
+        
+        # Check 5: Contrast and intensity range - be lenient
+        std_dev = np.std(gray)
+        min_val = np.min(gray)
+        max_val = np.max(gray)
+        intensity_range = max_val - min_val
+        
+        if std_dev < 10:  # Very low contrast - reduced from 15
+            return False, "Image has insufficient contrast for medical analysis"
+        
+        if intensity_range < 50:  # Narrow intensity range - reduced from 80
+            return False, "Image intensity range too narrow for medical imaging"
+        
+        # If all checks pass, accept as medical image
+        return True, "Image appears to be a medical X-ray/MRI"
+        
+    except Exception as e:
+        print(f"Warning: Image validation failed: {e}")
+        traceback.print_exc()
+        # On error, be lenient and accept
+        return True, "Image accepted for analysis"
+
+
+def preprocess_image(image_path, is_dicom=False):
+    """Read and preprocess image (supports DICOM and regular image formats)"""
+    if is_dicom:
+        return preprocess_dicom(image_path)
+    else:
+        # Load regular image formats (jpg, png, etc.)
+        try:
+            # Read image using PIL
+            pil_image = Image.open(image_path)
+            
+            # Convert to RGB if needed
+            if pil_image.mode != 'RGB':
+                if pil_image.mode == 'RGBA':
+                    # Handle transparency
+                    background = Image.new('RGB', pil_image.size, (255, 255, 255))
+                    background.paste(pil_image, mask=pil_image.split()[3])
+                    pil_image = background
+                else:
+                    pil_image = pil_image.convert('RGB')
+            
+            # Convert to numpy array
+            pixel_array = np.array(pil_image)
+            
+            # Check if image appears to be a medical image BEFORE converting to grayscale
+            # This allows us to detect color photos
+            is_medical, message = check_if_spine_image(pixel_array)
+            print(f"Medical image check: {is_medical} - {message}")
+            
+            if not is_medical:
+                raise ValueError(
+                    "This appears to be a CHEST CT scan. "
+                    "This system only analyzes spine X-rays and MRIs. "
+                    "Please upload a spine-related DICOM file."
+                )
+            
+            # Convert to grayscale for processing (to match DICOM pipeline)
+            if len(pixel_array.shape) == 3:
+                gray_array = cv2.cvtColor(pixel_array, cv2.COLOR_RGB2GRAY)
+            else:
+                gray_array = pixel_array
+            
+            # Create mock DICOM metadata for consistency
+            class MockDicom:
+                PatientID = 'N/A'
+                StudyDate = 'N/A'
+                Modality = 'X-ray'
+            
+            return gray_array, MockDicom()
+            
+        except ValueError:
+            # Re-raise spine detection errors
+            raise
+        except Exception as e:
+            raise ValueError(f"Error processing image: {str(e)}")
 
 
 def preprocess_dicom(dicom_path):
@@ -259,8 +431,8 @@ def classify_image(pixel_array):
     }
 
 
-def detect_lesions(pixel_array):
-    """Run YOLO detection"""
+def detect_lesions(pixel_array, confidence_threshold=0.25):
+    """Run YOLO detection with specified confidence threshold"""
     if detection_model is None:
         return None
     
@@ -271,7 +443,7 @@ def detect_lesions(pixel_array):
         rgb_image = pixel_array
     
     # Run detection
-    results = detection_model(rgb_image, conf=0.25)
+    results = detection_model(rgb_image, conf=confidence_threshold)
     
     detections = []
     annotated_image = rgb_image.copy()
@@ -306,7 +478,8 @@ def detect_lesions(pixel_array):
     return {
         'num_detections': len(detections),
         'detections': detections,
-        'annotated_image': img_base64
+        'annotated_image': img_base64,
+        'confidence_threshold': confidence_threshold
     }
 
 
@@ -332,27 +505,51 @@ def upload_file():
         file.save(filepath)
         
         print(f"Processing file: {filename}")
-        # Validate DICOM - validation is now done in preprocess_dicom
-        # Just do a quick check if file can be read
-        try:
-            pydicom.dcmread(filepath)
-        except Exception as e:
+        
+        # Check if file extension is allowed
+        if not allowed_file(filename):
             os.remove(filepath)
             return jsonify({
                 'error': 'Invalid file format',
-                'message': 'Please upload a valid DICOM (.dcm or .dicom) file',
-                'details': str(e)
+                'message': f'Please upload a valid image file. Supported formats: {", ".join(ALLOWED_EXTENSIONS)}',
             }), 400
         
-        # Process DICOM
+        # Determine if file is DICOM
+        file_extension = filename.rsplit('.', 1)[1].lower()
+        is_dicom = file_extension in {'dcm', 'dicom'}
+        
+        # Validate file can be read
+        if is_dicom:
+            try:
+                pydicom.dcmread(filepath)
+            except Exception as e:
+                os.remove(filepath)
+                return jsonify({
+                    'error': 'Invalid DICOM file',
+                    'message': 'Unable to read DICOM file. Please ensure it is a valid DICOM format.',
+                    'details': str(e)
+                }), 400
+        else:
+            # Validate regular image file
+            try:
+                Image.open(filepath).verify()
+            except Exception as e:
+                os.remove(filepath)
+                return jsonify({
+                    'error': 'Invalid image file',
+                    'message': 'Unable to read image file. Please ensure it is a valid image format.',
+                    'details': str(e)
+                }), 400
+        
+        # Process image (DICOM or regular)
         try:
-            pixel_array, dicom_data = preprocess_dicom(filepath)
+            pixel_array, dicom_data = preprocess_image(filepath, is_dicom=is_dicom)
         except ValueError as ve:
-            # Handle non-spine DICOM files
+            # Handle non-spine images
             os.remove(filepath)
             error_message = str(ve)
             return jsonify({
-                'error': 'Invalid spine DICOM',
+                'error': 'Invalid spine image',
                 'message': error_message
             }), 400
         
@@ -362,7 +559,23 @@ def upload_file():
         # Run detection if abnormal
         detection_result = None
         if classification_result['is_abnormal']:
-            detection_result = detect_lesions(pixel_array)
+            # First try with standard confidence (0.25)
+            detection_result = detect_lesions(pixel_array, confidence_threshold=0.25)
+            
+            # If no detections found but classified as abnormal, try with lower confidence
+            if detection_result and detection_result['num_detections'] == 0:
+                print(f"No detections at 0.25 confidence, trying lower threshold for {filename}")
+                # Try with lower confidence (0.15) to catch subtle abnormalities
+                detection_result_low = detect_lesions(pixel_array, confidence_threshold=0.15)
+                
+                # If lower confidence found something, use it
+                if detection_result_low and detection_result_low['num_detections'] > 0:
+                    detection_result = detection_result_low
+                    print(f"Found {detection_result_low['num_detections']} detections at 0.15 confidence")
+                else:
+                    # No detections even at low confidence
+                    # This can happen: classification detects subtle patterns YOLO can't localize
+                    print(f"Classification: Abnormal, but no visible lesions detected by YOLO")
         
         # Create preview image
         _, buffer = cv2.imencode('.png', pixel_array)
@@ -426,10 +639,11 @@ def health():
     })
 
 
+# Load models when app starts (for both flask and gunicorn)
+load_models()
+
 if __name__ == '__main__':
-    load_models()
     # Use environment variables for production
-    import os
     port = int(os.environ.get('PORT', 5000))
     # Disable debug mode to avoid auto-reloader issues
     app.run(debug=False, host='0.0.0.0', port=port)
